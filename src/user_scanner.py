@@ -1,48 +1,47 @@
-from datetime import datetime, timedelta
 import httpx
+from datetime import datetime, timedelta
 from src.utils.config import settings
 
 GITHUB_API = "https://api.github.com"
 
-async def get_inactive_collaborators(repo):
+async def get_inactive_collaborators(days: int = 30):
     """
-    Detect inactive collaborators in a given repo.
-    A collaborator is inactive if no commits in the last 30 days.
+    Detect inactive collaborators in the org — no recent commits within 'days' days.
     """
-    owner = settings.github_org
-    repo_name = repo.get("name")
     headers = {"Authorization": f"token {settings.github_token}"}
+    inactive_users = []
+    cutoff_date = datetime.utcnow() - timedelta(days=days)
 
     async with httpx.AsyncClient() as client:
-        # 1️⃣ Get collaborators
-        collab_url = f"{GITHUB_API}/repos/{owner}/{repo_name}/collaborators"
-        collab_resp = await client.get(collab_url, headers=headers)
-        collab_resp.raise_for_status()
-        collaborators = collab_resp.json()
+        # 1️⃣ Get all members of the organization
+        members_url = f"{GITHUB_API}/orgs/{settings.github_org}/members"
+        members_resp = await client.get(members_url, headers=headers)
+        members_resp.raise_for_status()
+        members = members_resp.json()
 
-        findings = []
-        since_date = (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z"
+        for member in members:
+            username = member["login"]
 
-        for user in collaborators:
-            username = user["login"]
+            # 2️⃣ Get user events (pushes, commits, PRs)
+            events_url = f"{GITHUB_API}/users/{username}/events"
+            events_resp = await client.get(events_url, headers=headers)
+            if events_resp.status_code != 200:
+                continue
 
-            # 2️⃣ Check for commits by this user
-            commits_url = (
-                f"{GITHUB_API}/repos/{owner}/{repo_name}/commits"
-                f"?author={username}&since={since_date}"
-            )
-            commits_resp = await client.get(commits_url, headers=headers)
+            events = events_resp.json()
+            last_activity = None
+            for e in events:
+                if e.get("created_at"):
+                    ts = datetime.fromisoformat(e["created_at"].replace("Z", "+00:00"))
+                    if not last_activity or ts > last_activity:
+                        last_activity = ts
 
-            if commits_resp.status_code == 200 and len(commits_resp.json()) == 0:
-                # 3️⃣ Mark inactive
-                findings.append({
-                    "id": f"{repo_name}-{username}",
-                    "type": "user_inactivity",
-                    "resource": username,
-                    "repo": repo_name,
-                    "description": f"User '{username}' inactive for 30+ days",
-                    "severity": "low",
-                    "timestamp": datetime.utcnow().isoformat(),
+            # 3️⃣ Mark user as inactive if no recent activity
+            if not last_activity or last_activity < cutoff_date:
+                inactive_users.append({
+                    "user": username,
+                    "last_activity": last_activity.isoformat() if last_activity else "N/A",
+                    "status": "inactive"
                 })
 
-        return findings
+    return inactive_users

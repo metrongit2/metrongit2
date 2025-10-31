@@ -9,20 +9,30 @@ app = FastAPI(title="GitSafeOps")
 def home():
     return {"message": "GitSafeOps API running"}
 
+
 @app.get("/scan")
-async def scan_org():
+async def scan_repos():
+    """🔍 Scan organization repositories for misconfigurations."""
     repos = await get_repos()
     all_findings = []
 
     for repo in repos:
-        # 🧩 Scan for repo-level misconfigurations
         repo_findings = await analyze_repo(repo)
-
-        # 🧩 Scan for inactive collaborators
-        inactive_users = await get_inactive_collaborators(repo)
-
-        # Combine results
         all_findings.extend(repo_findings)
-        all_findings.extend(inactive_users)
 
-    return {"findings": all_findings}
+    return {
+        "type": "repository_scan",
+        "total_findings": len(all_findings),
+        "findings": all_findings
+    }
+
+
+@app.get("/inactive")
+async def scan_inactive_users():
+    """🧑‍💻 Identify inactive org members based on last 30 days of activity."""
+    inactive_users = await get_inactive_collaborators()
+    return {
+        "type": "user_activity_scan",
+        "total_inactive": len(inactive_users),
+        "inactive_users": inactive_users
+    }
